@@ -12,7 +12,12 @@ import (
 	"time"
 
 	"github.com/msrovani/myclaw/internal/config"
+	"github.com/msrovani/myclaw/internal/db"
+	"github.com/msrovani/myclaw/internal/memory"
 	"github.com/msrovani/myclaw/internal/observability"
+	"github.com/msrovani/myclaw/internal/providers"
+	"github.com/msrovani/myclaw/internal/router"
+	"github.com/msrovani/myclaw/internal/skills"
 )
 
 func main() {
@@ -65,6 +70,26 @@ func main() {
 		}()
 	}
 
+	// --- XXXCLAW Core Subsystems ---
+	slog.Info("initializing core subsystems...")
+
+	dbMgr := db.NewManager(db.Config{
+		BaseDataDir: "./data",
+		BusyTimeout: 5000,
+		MaxReaders:  4,
+	})
+
+	memEngine := memory.NewEngine(dbMgr)
+	_ = memEngine // Available for future controllers
+
+	economy := router.NewEconomy(dbMgr)
+	llmRouter := router.NewRouter([]providers.Provider{}, economy)
+	_ = llmRouter // Available for future controllers
+
+	skillRegistry := skills.NewRegistry()
+	_ = skillRegistry // Available for future controllers
+	// -------------------------------
+
 	srv := &http.Server{
 		Addr:         cfg.HTTPAddr,
 		Handler:      mux,
@@ -94,6 +119,10 @@ func main() {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("http server shutdown error", "error", err)
 	}
+
+	// Shutdown core subsystems safely
+	slog.Info("closing database connections...")
+	dbMgr.CloseAll()
 
 	slog.Info("xxxclaw stopped")
 }
