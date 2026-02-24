@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/msrovani/myclaw/internal/config"
+	"github.com/msrovani/myclaw/internal/dashboard"
 	"github.com/msrovani/myclaw/internal/db"
 	"github.com/msrovani/myclaw/internal/memory"
 	"github.com/msrovani/myclaw/internal/observability"
@@ -87,7 +88,10 @@ func main() {
 	_ = llmRouter // Available for future controllers
 
 	skillRegistry := skills.NewRegistry()
-	_ = skillRegistry // Available for future controllers
+
+	// --- Dashboard UI ---
+	slog.Info("initializing admin dashboard routes...")
+	dashboard.NewServer(mux, memEngine, economy, llmRouter, skillRegistry)
 	// -------------------------------
 
 	srv := &http.Server{

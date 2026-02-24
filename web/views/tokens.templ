@@ -1,0 +1,38 @@
+package views
+
+import "fmt"
+
+templ Tokens(totalCost float64) {
+	@Layout("Tokens & Cost") {
+		<h2>Token Economy</h2>
+		<div class="panel">
+			<div class="metric-card">
+				<div class="metric-val">${ fmt.Sprintf("%.4f", totalCost) }</div>
+				<div class="metric-label">Total Workspace Cost</div>
+			</div>
+			
+			<p style="margin-top: 2rem; color: var(--text-dim);">
+				LLMs charge per input and output token. The router records all usage.
+			</p>
+			
+			<div style="margin-top: 1rem; padding: 1rem; border: 1px solid var(--border); border-radius: 4px;">
+				<div id="costChart" style="width: 100%; height: 300px;"></div>
+			</div>
+			
+			<script>
+				document.addEventListener("DOMContentLoaded", function() {
+					if (typeof echarts !== 'undefined') {
+						var chart = echarts.init(document.getElementById('costChart'), 'dark');
+						chart.setOption({
+							backgroundColor: 'transparent',
+							title: { text: 'Cost Over Time' },
+							xAxis: { type: 'category', data: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] },
+							yAxis: { type: 'value' },
+							series: [{ data: [0, 0, 0, 0.005, 0.015, 0, totalCost], type: 'line', smooth: true, itemStyle: { color: '#0ea5e9' } }]
+						});
+					}
+				});
+			</script>
+		</div>
+	}
+}

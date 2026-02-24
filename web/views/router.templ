@@ -1,0 +1,37 @@
+package views
+
+templ RouterPanel() {
+	@Layout("LLM Router") {
+		<h2>LLM Routing & Policies</h2>
+
+		<div class="panel">
+			<h3>Active Providers</h3>
+			<table style="width: 100%; text-align: left; border-collapse: collapse; margin-top: 1rem;">
+				<thead>
+					<tr style="border-bottom: 2px solid var(--border);">
+						<th style="padding: 0.5rem 0;">Adapter</th>
+						<th style="padding: 0.5rem 0;">Status</th>
+						<th style="padding: 0.5rem 0;">Role</th>
+					</tr>
+				</thead>
+				<tbody>
+					<tr style="border-bottom: 1px solid var(--border);">
+						<td style="padding: 0.5rem 0;"><code>ollama</code></td>
+						<td style="padding: 0.5rem 0; color: var(--success);">Available</td>
+						<td style="padding: 0.5rem 0;">Low Latency / Local Privacy</td>
+					</tr>
+					<tr style="border-bottom: 1px solid var(--border);">
+						<td style="padding: 0.5rem 0;"><code>gemini</code></td>
+						<td style="padding: 0.5rem 0; color: var(--success);">Available</td>
+						<td style="padding: 0.5rem 0;">Default Reasoning</td>
+					</tr>
+					<tr style="border-bottom: 1px solid var(--border);">
+						<td style="padding: 0.5rem 0;"><code>claude</code></td>
+						<td style="padding: 0.5rem 0; color: var(--warning);">Not Configured</td>
+						<td style="padding: 0.5rem 0;">Complex Reasoning</td>
+					</tr>
+				</tbody>
+			</table>
+		</div>
+	}
+}

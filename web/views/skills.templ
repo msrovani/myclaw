@@ -1,0 +1,29 @@
+package views
+
+import "github.com/msrovani/myclaw/internal/skills"
+
+templ SkillsPanel(registered []skills.Skill) {
+	@Layout("Skills Runtime") {
+		<h2>Skills & Workflows Runtime</h2>
+		
+		<div class="panel">
+			<h3>Registered Tools (<span style="color: var(--primary);">{ itoa(len(registered)) }</span>)</h3>
+			
+			<div style="margin-top: 1.5rem;">
+				for _, skill := range registered {
+					<div style="padding: 1rem; border: 1px solid var(--border); border-radius: 4px; margin-bottom: 1rem;">
+						<div style="font-weight: bold; font-size: 1.125rem; color: var(--primary); margin-bottom: 0.5rem;">
+							{ skill.ID() }
+						</div>
+						<div style="color: var(--text-dim);">
+							{ skill.Description() }
+						</div>
+					</div>
+				}
+				if len(registered) == 0 {
+					<p style="color: var(--text-dim);">No skills currently mounted to the runtime.</p>
+				}
+			</div>
+		</div>
+	}
+}

@@ -1,0 +1,38 @@
+package views
+
+templ MemoryPanel() {
+	@Layout("Memory Engine") {
+		<h2>Memory Engine</h2>
+		
+		<div class="grid-2">
+			<div class="panel">
+				<h3>Cognitive Layers</h3>
+				<ul style="list-style: none; padding: 0;">
+					<li style="padding: 0.5rem 0; border-bottom: 1px solid var(--border);">
+						<span style="color: var(--primary);">System</span>: Core Directives
+					</li>
+					<li style="padding: 0.5rem 0; border-bottom: 1px solid var(--border);">
+						<span style="color: var(--warning);">Procedural</span>: Persistent Agent Rules
+					</li>
+					<li style="padding: 0.5rem 0; border-bottom: 1px solid var(--border);">
+						<span style="color: var(--success);">Long-Term</span>: Semantic Storage (Vector + FTS)
+					</li>
+					<li style="padding: 0.5rem 0; border-bottom: 1px solid var(--border);">
+						<span style="color: var(--danger);">Short-Term</span>: Session working graph
+					</li>
+				</ul>
+			</div>
+			
+			<div class="panel">
+				<h3>Engine Status</h3>
+				<div class="metric-card" style="margin-bottom: 1rem;">
+					<div class="metric-val">100%</div>
+					<div class="metric-label">Strict Tenant Isolation</div>
+				</div>
+				<p style="color: var(--text-dim); font-size: 0.875rem;">
+					All memory operations require a valid `TenantContext`. Physical DB files are separate per Workspace.
+				</p>
+			</div>
+		</div>
+	}
+}

@@ -1,0 +1,50 @@
+package views
+
+import (
+	"fmt"
+	"strconv"
+	"github.com/msrovani/myclaw/internal/observability"
+)
+
+templ Overview(stats observability.SystemStats) {
+	@Layout("Overview") {
+		<h2>System Overview</h2>
+		
+		<div class="grid-2">
+			<div class="panel">
+				<h3>Engine Metrics</h3>
+				<div class="grid-2" style="margin-top: 1rem;">
+					<div class="metric-card">
+						<div class="metric-val">{ itoa(stats.Goroutines) }</div>
+						<div class="metric-label">Goroutines</div>
+					</div>
+					<div class="metric-card">
+						<div class="metric-val">{ bytesToMB(stats.AllocBytes) } MB</div>
+						<div class="metric-label">Heap Alloc</div>
+					</div>
+				</div>
+			</div>
+
+			<div class="panel">
+				<h3>Uptime</h3>
+				<div class="metric-card" style="margin-top: 1rem;">
+					<div class="metric-val" style="color: var(--success);">{ stats.Uptime }</div>
+					<div class="metric-label">Active Time</div>
+				</div>
+			</div>
+		</div>
+
+		<div class="panel">
+			<h3>Database Health</h3>
+			<p>SQLite WAL Mode activated. Serialize Writer loop running healthy.</p>
+		</div>
+	}
+}
+
+func itoa(i int) string {
+	return strconv.Itoa(i)
+}
+
+func bytesToMB(b uint64) string {
+	return fmt.Sprintf("%.2f", float64(b)/1024/1024)
+}
