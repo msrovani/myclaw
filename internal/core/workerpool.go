@@ -122,6 +122,11 @@ func (wp *WorkerPool) executeTask(workerID int, task Task) {
 // Returns error if the pool is shut down or context is cancelled.
 func (wp *WorkerPool) Submit(ctx context.Context, task Task) error {
 	wp.submitted.Add(1)
+
+	if err := wp.ctx.Err(); err != nil {
+		return fmt.Errorf("worker pool %q is shut down", wp.name)
+	}
+
 	select {
 	case <-wp.ctx.Done():
 		return fmt.Errorf("worker pool %q is shut down", wp.name)
@@ -134,6 +139,10 @@ func (wp *WorkerPool) Submit(ctx context.Context, task Task) error {
 
 // TrySubmit adds a task without blocking. Returns false if the queue is full.
 func (wp *WorkerPool) TrySubmit(task Task) bool {
+	if err := wp.ctx.Err(); err != nil {
+		return false
+	}
+
 	select {
 	case <-wp.ctx.Done():
 		return false
