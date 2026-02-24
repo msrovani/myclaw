@@ -101,6 +101,7 @@ func CoreMigrations() []Migration {
 					session_id   TEXT,
 					agent_id     TEXT,
 					metadata     TEXT DEFAULT '{}',
+					embedding    BLOB,
 					hash         TEXT,
 					created_at   TEXT NOT NULL DEFAULT (datetime('now')),
 					updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
@@ -109,6 +110,24 @@ func CoreMigrations() []Migration {
 				CREATE INDEX IF NOT EXISTS idx_memories_session ON memories(session_id);
 				CREATE INDEX IF NOT EXISTS idx_memories_agent ON memories(agent_id);
 				CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at);
+
+				CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+					content,
+					metadata,
+					content='memories',
+					content_rowid='rowid'
+				);
+
+				CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
+					INSERT INTO memories_fts(rowid, content, metadata) VALUES (new.rowid, new.content, new.metadata);
+				END;
+				CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
+					INSERT INTO memories_fts(memories_fts, rowid, content, metadata) VALUES ('delete', old.rowid, old.content, old.metadata);
+				END;
+				CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
+					INSERT INTO memories_fts(memories_fts, rowid, content, metadata) VALUES ('delete', old.rowid, old.content, old.metadata);
+					INSERT INTO memories_fts(rowid, content, metadata) VALUES (new.rowid, new.content, new.metadata);
+				END;
 
 				CREATE TABLE IF NOT EXISTS entities (
 					id           TEXT PRIMARY KEY,
