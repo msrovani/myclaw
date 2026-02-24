@@ -1,0 +1,15 @@
+XXXCLAW
+Copyright 2026
+
+This project includes patterns inspired by:
+
+- Mem0 (https://github.com/mem0ai/mem0) — Apache-2.0 License
+  Memory API contract design (add/search/get/update/delete/list_entities)
+  Scopes design (user/session/agent)
+
+- sqlite-vec (https://github.com/asg017/sqlite-vec) — MIT + Apache-2.0 License
+  Vector search integration via Go bindings
+  vec0 virtual table patterns
+
+- mem0-mcp (https://github.com/mem0ai/mem0-mcp) — Apache-2.0 License
+  MCP tool schema inspiration for memory operations
