@@ -2,6 +2,7 @@ package skills
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -15,6 +16,8 @@ type Registry struct {
 	mu     sync.RWMutex
 	skills map[string]Skill
 }
+
+var ErrSkillAlreadyRegistered = errors.New("skill already registered")
 
 // NewRegistry creates a new Skill registry.
 func NewRegistry() *Registry {
@@ -30,7 +33,7 @@ func (r *Registry) Register(s Skill) error {
 
 	id := s.ID()
 	if _, exists := r.skills[id]; exists {
-		return fmt.Errorf("skill %q already registered", id)
+		return fmt.Errorf("%w: %s", ErrSkillAlreadyRegistered, id)
 	}
 	r.skills[id] = s
 	slog.Debug("skills: registered", "id", id)

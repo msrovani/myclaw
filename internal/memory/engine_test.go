@@ -13,7 +13,8 @@ func TestEngine_Minimal(t *testing.T) {
 	mgr := db.NewManager(db.Config{BaseDataDir: t.TempDir()})
 	defer mgr.CloseAll()
 
-	engine := NewEngine(mgr)
+	// Using nil provider for minimal unit test (engine handles nil gracefully)
+	engine := NewEngine(mgr, nil)
 	ctx := core.WithTenant(context.Background(), core.TenantContext{UID: "user1", WorkspaceID: "w1"})
 
 	// 1. Add
@@ -41,7 +42,7 @@ func TestEngine_Minimal(t *testing.T) {
 		t.Fatalf("UpdateMemory: %v", err)
 	}
 	if updated.Content != "Updated content" {
-		t.Errorf("UpdateMemory content mismatch")
+		t.Errorf("Updated content mismatch")
 	}
 
 	// 4. Delete

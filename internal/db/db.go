@@ -28,13 +28,18 @@ type Config struct {
 type DB struct {
 	writer    *sql.DB
 	readers   *sql.DB
-	writeMu   sync.Mutex
 	writeCh   chan writeOp
 	wg        sync.WaitGroup
 	ctx       context.Context
 	cancel    context.CancelFunc
 	cfg       Config
-	vecLoaded bool
+	mu        sync.RWMutex
+	closed    bool
+}
+
+type Stats struct {
+	WriteQueueLen int
+	WriteQueueCap int
 }
 
 type writeOp struct {
@@ -45,14 +50,14 @@ type writeOp struct {
 // Open creates a new DB instance with WAL, serialized writer, and reader pool.
 func Open(cfg Config) (*DB, error) {
 	// Writer connection — single, serialized.
-	writerDSN := fmt.Sprintf("file:%s?_pragma=busy_timeout(%d)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(1)",
+	writerDSN := fmt.Sprintf("file:%s?_pragma=busy_timeout(%d)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(1)&_pragma=cache_size(-20000)&_pragma=mmap_size(268435456)&_pragma=temp_store(memory)",
 		cfg.Path, cfg.BusyTimeout)
 
 	writer, err := sql.Open("sqlite", writerDSN)
 	if err != nil {
 		return nil, fmt.Errorf("db: open writer: %w", err)
 	}
-	writer.SetMaxOpenConns(1) // Serialized writer
+	writer.SetMaxOpenConns(1)
 	writer.SetMaxIdleConns(1)
 
 	if err := writer.Ping(); err != nil {
@@ -60,14 +65,8 @@ func Open(cfg Config) (*DB, error) {
 		return nil, fmt.Errorf("db: ping writer: %w", err)
 	}
 
-	var mode string
-	if err := writer.QueryRow("PRAGMA journal_mode=WAL").Scan(&mode); err != nil || mode != "wal" {
-		writer.Close()
-		return nil, fmt.Errorf("db: enable WAL failed: %w (got %q)", err, mode)
-	}
-
 	// Reader pool — multiple concurrent readers.
-	readerDSN := fmt.Sprintf("file:%s?mode=ro&_pragma=busy_timeout(%d)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)",
+	readerDSN := fmt.Sprintf("file:%s?mode=ro&_pragma=busy_timeout(%d)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=cache_size(-20000)&_pragma=mmap_size(268435456)&_pragma=temp_store(memory)",
 		cfg.Path, cfg.BusyTimeout)
 
 	maxReaders := cfg.MaxReaders
@@ -93,13 +92,11 @@ func Open(cfg Config) (*DB, error) {
 		cfg:     cfg,
 	}
 
-	// Start the serialized writer goroutine.
 	d.wg.Add(1)
 	go d.writerLoop()
 
 	slog.Info("db: opened",
 		"path", cfg.Path,
-		"wal", cfg.WALEnabled,
 		"max_readers", maxReaders,
 		"busy_timeout", cfg.BusyTimeout,
 	)
@@ -107,21 +104,16 @@ func Open(cfg Config) (*DB, error) {
 	return d, nil
 }
 
-// writerLoop processes write operations sequentially.
 func (d *DB) writerLoop() {
 	defer d.wg.Done()
 	for {
 		select {
 		case <-d.ctx.Done():
 			// Drain remaining operations.
-			for op := range d.writeCh {
-				op.result <- fmt.Errorf("db: shutting down")
-			}
+			// Note: We don't close writeCh to avoid panics in Write().
+			// We just stop processing once the context is cancelled.
 			return
-		case op, ok := <-d.writeCh:
-			if !ok {
-				return
-			}
+		case op := <-d.writeCh:
 			tx, err := d.writer.BeginTx(d.ctx, nil)
 			if err != nil {
 				op.result <- fmt.Errorf("db: begin tx: %w", err)
@@ -138,8 +130,14 @@ func (d *DB) writerLoop() {
 }
 
 // Write submits a write operation to the serialized writer queue.
-// The function runs inside a transaction. Blocks until complete.
 func (d *DB) Write(ctx context.Context, fn func(tx *sql.Tx) error) error {
+	d.mu.RLock()
+	if d.closed {
+		d.mu.RUnlock()
+		return fmt.Errorf("db: closed")
+	}
+	d.mu.RUnlock()
+
 	op := writeOp{
 		fn:     fn,
 		result: make(chan error, 1),
@@ -166,58 +164,52 @@ func (d *DB) Read(ctx context.Context, fn func(db *sql.DB) error) error {
 	return fn(d.readers)
 }
 
-// ReadRow is a convenience for reading a single row.
 func (d *DB) ReadRow(ctx context.Context, query string, args ...any) *sql.Row {
 	return d.readers.QueryRowContext(ctx, query, args...)
 }
 
-// ReadRows is a convenience for reading multiple rows.
 func (d *DB) ReadRows(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
 	return d.readers.QueryContext(ctx, query, args...)
 }
 
-// Writer returns the raw writer DB for migrations. Use with caution.
 func (d *DB) Writer() *sql.DB {
 	return d.writer
 }
 
-// Checkpoint forces a WAL checkpoint.
 func (d *DB) Checkpoint(ctx context.Context) error {
 	_, err := d.writer.ExecContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)")
 	if err != nil {
 		return fmt.Errorf("db: checkpoint: %w", err)
 	}
-	slog.Info("db: WAL checkpoint completed")
 	return nil
 }
 
-// Stats returns database pool statistics.
-type Stats struct {
-	Writer        sql.DBStats `json:"writer"`
-	Readers       sql.DBStats `json:"readers"`
-	WriteQueueLen int         `json:"write_queue_len"`
-	WriteQueueCap int         `json:"write_queue_cap"`
-}
-
 func (d *DB) Stats() Stats {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
 	return Stats{
-		Writer:        d.writer.Stats(),
-		Readers:       d.readers.Stats(),
 		WriteQueueLen: len(d.writeCh),
 		WriteQueueCap: cap(d.writeCh),
 	}
 }
 
-// Close shuts down the database.
 func (d *DB) Close() error {
+	d.mu.Lock()
+	if d.closed {
+		d.mu.Unlock()
+		return nil
+	}
+	d.closed = true
+	d.mu.Unlock()
+
 	d.cancel()
-	close(d.writeCh)
+	// We don't close(d.writeCh) here to avoid racing with Write()
 	d.wg.Wait()
 
-	// Final checkpoint before close.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	d.Checkpoint(ctx)
+	_ = d.Checkpoint(ctx)
 
 	var errs []error
 	if err := d.writer.Close(); err != nil {

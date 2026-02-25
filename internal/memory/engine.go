@@ -5,21 +5,28 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/msrovani/myclaw/internal/core"
 	"github.com/msrovani/myclaw/internal/db"
+	"github.com/msrovani/myclaw/internal/providers"
 )
 
 // Engine is the Mem0-like persistence implementation over isolated SQLite DBs.
 type Engine struct {
-	dbMgr *db.Manager
+	dbMgr    *db.Manager
+	provider providers.Provider
 }
 
-// NewEngine creates a new memory engine backed by the DB Manager.
-func NewEngine(mgr *db.Manager) *Engine {
-	return &Engine{dbMgr: mgr}
+// NewEngine creates a new memory engine backed by the DB Manager and an LLM provider.
+func NewEngine(mgr *db.Manager, provider providers.Provider) *Engine {
+	return &Engine{
+		dbMgr:    mgr,
+		provider: provider,
+	}
 }
 
 // ensureTenant forces extraction of the context, returning the physical *DB for that workspace.
@@ -58,6 +65,16 @@ func (e *Engine) AddMemory(ctx context.Context, content string, opts AddOptions)
 		UpdatedAt: time.Now(),
 	}
 
+	// Generate embeddings automatically if provider is available
+	if e.provider != nil {
+		emb, err := e.provider.Embed(ctx, content)
+		if err != nil {
+			slog.Warn("memory engine: failed to generate embedding", "error", err, "id", mem.ID)
+		} else {
+			mem.Embedding = emb
+		}
+	}
+
 	if mem.Metadata == nil {
 		mem.Metadata = make(map[string]any)
 	}
@@ -68,11 +85,17 @@ func (e *Engine) AddMemory(ctx context.Context, content string, opts AddOptions)
 		return mem, fmt.Errorf("marshal metadata: %w", err)
 	}
 
+	var embBytes []byte
+	if len(mem.Embedding) > 0 {
+		embBytes, _ = db.Float32ToBytes(mem.Embedding)
+	}
+
 	err = tenantDB.Write(ctx, func(tx *sql.Tx) error {
-		q := `INSERT INTO memories (id, uid, workspace_id, content, session_id, agent_id, metadata, created_at, updated_at) 
-		      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		q := `INSERT INTO memories (id, uid, workspace_id, content, session_id, agent_id, metadata, embedding, created_at, updated_at)
+		      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 		_, err := tx.Exec(q, mem.ID, tc.UID, tc.WorkspaceID, mem.Content,
 			nullableString(mem.SessionID), nullableString(mem.AgentID), string(metaBytes),
+			embBytes,
 			mem.CreatedAt.Format(time.RFC3339), mem.UpdatedAt.Format(time.RFC3339))
 		return err
 	})
@@ -81,9 +104,7 @@ func (e *Engine) AddMemory(ctx context.Context, content string, opts AddOptions)
 }
 
 // SearchMemories performs hybrid retrieval for the tenant.
-func (e *Engine) SearchMemories(ctx context.Context, query string, queryEmbedding []float32, opts SearchOptions) ([]Memory, error) {
-	// Full hybrid logic and rank fusion goes here in a future step.
-	// For now we implement basic fallback vector retrieval to satisfy the interface.
+func (e *Engine) SearchMemories(ctx context.Context, query string, opts SearchOptions) ([]Memory, error) {
 	_, tenantDB, err := e.ensureTenant(ctx)
 	if err != nil {
 		return nil, err
@@ -94,13 +115,31 @@ func (e *Engine) SearchMemories(ctx context.Context, query string, queryEmbeddin
 		limit = 10
 	}
 
-	vecResults, err := tenantDB.SearchVectorFallback(ctx, queryEmbedding, limit)
-	if err != nil {
-		return nil, err
+	var queryEmbedding []float32
+	if e.provider != nil {
+		queryEmbedding, _ = e.provider.Embed(ctx, query)
 	}
 
+	// 1. Vector Search
+	var vecResults []db.SearchResult
+	if len(queryEmbedding) > 0 {
+		vecResults, err = tenantDB.SearchVector(ctx, queryEmbedding, limit)
+		if err != nil {
+			slog.Error("memory engine: vector search failed", "error", err)
+		}
+	}
+
+	// 2. FTS Search
+	ftsResults, err := tenantDB.SearchFTS(ctx, query, limit)
+	if err != nil {
+		slog.Error("memory engine: fts search failed", "error", err)
+	}
+
+	// 3. Reciprocal Rank Fusion
+	combinedRows := db.ReciprocalRankFusion(vecResults, ftsResults, 60)
+
 	var results []Memory
-	for _, res := range vecResults {
+	for _, res := range combinedRows {
 		var meta map[string]any
 		json.Unmarshal([]byte(res.Metadata), &meta)
 
@@ -108,8 +147,12 @@ func (e *Engine) SearchMemories(ctx context.Context, query string, queryEmbeddin
 			ID:       res.ID,
 			Content:  res.Content,
 			Metadata: meta,
-			Score:    1.0 - res.Distance, // Convert distance to similarity score
+			Score:    res.Score,
 		})
+	}
+
+	if len(results) > limit {
+		results = results[:limit]
 	}
 
 	return results, nil
@@ -155,12 +198,27 @@ func (e *Engine) UpdateMemory(ctx context.Context, id string, content string, me
 		return Memory{}, err
 	}
 
+	var embBytes []byte
+	if e.provider != nil {
+		emb, _ := e.provider.Embed(ctx, content)
+		if len(emb) > 0 {
+			embBytes, _ = db.Float32ToBytes(emb)
+		}
+	}
+
 	metaBytes, _ := json.Marshal(metadata)
 	updatedAt := time.Now().Format(time.RFC3339)
 
 	err = tenantDB.Write(ctx, func(tx *sql.Tx) error {
-		res, err := tx.Exec("UPDATE memories SET content = ?, metadata = ?, updated_at = ? WHERE id = ? AND uid = ? AND workspace_id = ?",
-			content, string(metaBytes), updatedAt, id, tc.UID, tc.WorkspaceID)
+		var res sql.Result
+		var err error
+		if len(embBytes) > 0 {
+			res, err = tx.Exec("UPDATE memories SET content = ?, metadata = ?, embedding = ?, updated_at = ? WHERE id = ? AND uid = ? AND workspace_id = ?",
+				content, string(metaBytes), embBytes, updatedAt, id, tc.UID, tc.WorkspaceID)
+		} else {
+			res, err = tx.Exec("UPDATE memories SET content = ?, metadata = ?, updated_at = ? WHERE id = ? AND uid = ? AND workspace_id = ?",
+				content, string(metaBytes), updatedAt, id, tc.UID, tc.WorkspaceID)
+		}
 		if err != nil {
 			return err
 		}
@@ -188,6 +246,105 @@ func (e *Engine) DeleteMemory(ctx context.Context, id string) error {
 		_, err := tx.Exec("DELETE FROM memories WHERE id = ? AND uid = ? AND workspace_id = ?", id, tc.UID, tc.WorkspaceID)
 		return err
 	})
+}
+
+// CompactMemories evaluates recent short-term memories and summarizes them into a single LongTerm memory.
+// This implements the "Recursive Summarization" cognitive pattern.
+func (e *Engine) CompactMemories(ctx context.Context, sessionID string) (int64, error) {
+	if e.provider == nil {
+		return 0, fmt.Errorf("memory engine: compact requires an LLM provider")
+	}
+
+	tc, tenantDB, err := e.ensureTenant(ctx)
+	if err != nil {
+		return 0, err
+	}
+
+	// 1. Fetch all short-term memories for this session
+	q := `SELECT content FROM memories
+	      WHERE uid = ? AND workspace_id = ? AND session_id = ?
+	      AND json_extract(metadata, '$.layer') = 'short_term'
+	      ORDER BY created_at ASC`
+
+	rows, err := tenantDB.ReadRows(ctx, q, tc.UID, tc.WorkspaceID, sessionID)
+	if err != nil {
+		return 0, fmt.Errorf("compact: fetch memories: %w", err)
+	}
+	defer rows.Close()
+
+	var contents []string
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err == nil {
+			contents = append(contents, c)
+		}
+	}
+
+	if len(contents) < 2 {
+		// Not enough content to summarize/compact
+		return 0, nil
+	}
+
+	// 2. Build summarization prompt
+	fullText := strings.Join(contents, "\n---\n")
+	prompt := fmt.Sprintf("Summarize the following interaction into a single, high-density knowledge entry for long-term memory. Focus on facts, user preferences, and key events. Avoid conversational filler.\n\nCONTENT:\n%s", fullText)
+
+	// 3. Call Provider to summarize
+	resp, err := e.provider.Generate(ctx, providers.GenerateRequest{
+		Messages: []providers.Message{
+			{Role: providers.RoleSystem, Content: "You are a memory consolidation engine. Your task is to summarize short-term interactions into long-term knowledge."},
+			{Role: providers.RoleUser, Content: prompt},
+		},
+		Temperature: 0.3, // Low temperature for factual summarization
+	})
+	if err != nil {
+		return 0, fmt.Errorf("compact: llm generation failed: %w", err)
+	}
+
+	summary := strings.TrimSpace(resp.Content)
+	if summary == "" {
+		return 0, fmt.Errorf("compact: received empty summary from provider")
+	}
+
+	// 4. Atomic Write: Add new LongTerm memory and delete/archive short-term ones
+	var compacted int64
+	err = tenantDB.Write(ctx, func(tx *sql.Tx) error {
+		// A. Add the summarized long-term memory
+		summaryID := uuid.New().String()
+		now := time.Now().Format(time.RFC3339)
+
+		// Generate embedding for the summary too
+		var embBytes []byte
+		if emb, embErr := e.provider.Embed(ctx, summary); embErr == nil {
+			embBytes, _ = db.Float32ToBytes(emb)
+		}
+
+		meta := map[string]any{"layer": string(LayerLongTerm), "compacted_from_session": sessionID}
+		metaStr, _ := json.Marshal(meta)
+
+		insQ := `INSERT INTO memories (id, uid, workspace_id, content, session_id, metadata, embedding, created_at, updated_at)
+		         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		if _, err := tx.Exec(insQ, summaryID, tc.UID, tc.WorkspaceID, summary, sessionID, string(metaStr), embBytes, now, now); err != nil {
+			return err
+		}
+
+		// B. Delete the short-term memories that were just compacted
+		delQ := `DELETE FROM memories
+		         WHERE uid = ? AND workspace_id = ? AND session_id = ?
+		         AND json_extract(metadata, '$.layer') = 'short_term'`
+		res, err := tx.Exec(delQ, tc.UID, tc.WorkspaceID, sessionID)
+		if err != nil {
+			return err
+		}
+		compacted, _ = res.RowsAffected()
+		return nil
+	})
+
+	if err == nil {
+		slog.Info("memory engine: session compacted", "session_id", sessionID, "memories_reduced", compacted)
+	}
+
+	return compacted, err
 }
 
 // helper for NULLs

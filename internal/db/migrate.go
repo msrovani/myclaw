@@ -13,6 +13,7 @@ type Migration struct {
 	Version     int
 	Description string
 	Up          string
+	Optional    bool // If true, failure to apply won't stop the system (e.g., missing extensions)
 }
 
 // Migrate runs all pending migrations in order.
@@ -53,6 +54,10 @@ func Migrate(db *sql.DB, migrations []Migration) error {
 
 		if _, err := tx.Exec(m.Up); err != nil {
 			tx.Rollback()
+			if m.Optional {
+				slog.Warn("optional migration failed (likely missing extension)", "version", m.Version, "error", err)
+				continue
+			}
 			return fmt.Errorf("migrate v%d (%s): %w", m.Version, m.Description, err)
 		}
 
@@ -75,18 +80,10 @@ func Migrate(db *sql.DB, migrations []Migration) error {
 		applied++
 	}
 
-	if applied > 0 {
-		slog.Info("migrations complete", "applied", applied, "current_version", migrations[len(migrations)-1].Version)
-	} else {
-		slog.Info("migrations: already up to date", "version", maxVersion)
-	}
-
 	return nil
 }
 
 // CoreMigrations returns the base set of migrations for XXXCLAW.
-// All tables include uid and workspace_id for defense-in-depth isolation,
-// even when using DB-per-workspace physical isolation.
 func CoreMigrations() []Migration {
 	return []Migration{
 		{
@@ -107,9 +104,6 @@ func CoreMigrations() []Migration {
 					updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
 				);
 				CREATE INDEX IF NOT EXISTS idx_memories_tenant ON memories(uid, workspace_id);
-				CREATE INDEX IF NOT EXISTS idx_memories_session ON memories(session_id);
-				CREATE INDEX IF NOT EXISTS idx_memories_agent ON memories(agent_id);
-				CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at);
 
 				CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
 					content,
@@ -129,33 +123,6 @@ func CoreMigrations() []Migration {
 					INSERT INTO memories_fts(rowid, content, metadata) VALUES (new.rowid, new.content, new.metadata);
 				END;
 
-				CREATE TABLE IF NOT EXISTS entities (
-					id           TEXT PRIMARY KEY,
-					uid          TEXT NOT NULL,
-					workspace_id TEXT NOT NULL,
-					name         TEXT NOT NULL,
-					entity_type  TEXT NOT NULL DEFAULT 'unknown',
-					metadata     TEXT DEFAULT '{}',
-					created_at   TEXT NOT NULL DEFAULT (datetime('now'))
-				);
-				CREATE INDEX IF NOT EXISTS idx_entities_tenant ON entities(uid, workspace_id);
-				CREATE UNIQUE INDEX IF NOT EXISTS idx_entities_tenant_name_type ON entities(uid, workspace_id, name, entity_type);
-
-				CREATE TABLE IF NOT EXISTS entity_relations (
-					id           TEXT PRIMARY KEY,
-					uid          TEXT NOT NULL,
-					workspace_id TEXT NOT NULL,
-					source_id    TEXT NOT NULL REFERENCES entities(id),
-					target_id    TEXT NOT NULL REFERENCES entities(id),
-					relation     TEXT NOT NULL,
-					weight       REAL DEFAULT 1.0,
-					created_at   TEXT NOT NULL DEFAULT (datetime('now')),
-					UNIQUE(uid, workspace_id, source_id, target_id, relation)
-				);
-				CREATE INDEX IF NOT EXISTS idx_relations_tenant ON entity_relations(uid, workspace_id);
-				CREATE INDEX IF NOT EXISTS idx_relations_source ON entity_relations(source_id);
-				CREATE INDEX IF NOT EXISTS idx_relations_target ON entity_relations(target_id);
-
 				CREATE TABLE IF NOT EXISTS token_usage (
 					id            INTEGER PRIMARY KEY AUTOINCREMENT,
 					uid           TEXT NOT NULL,
@@ -168,9 +135,20 @@ func CoreMigrations() []Migration {
 					session_id    TEXT,
 					created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 				);
-				CREATE INDEX IF NOT EXISTS idx_tokens_tenant ON token_usage(uid, workspace_id);
-				CREATE INDEX IF NOT EXISTS idx_tokens_provider ON token_usage(provider);
-				CREATE INDEX IF NOT EXISTS idx_tokens_session ON token_usage(session_id);
+			`,
+		},
+		{
+			Version:     2,
+			Description: "sqlite-vec integration",
+			Optional:    true, // Permite rodar sem a extensão C sqlite-vec
+			Up: `
+				CREATE VIRTUAL TABLE memories_vec0 USING vec0(
+					embedding float[384]
+				);
+
+				CREATE TRIGGER memories_vec_ai AFTER INSERT ON memories WHEN new.embedding IS NOT NULL BEGIN
+					INSERT INTO memories_vec0(rowid, embedding) VALUES (new.rowid, new.embedding);
+				END;
 			`,
 		},
 	}

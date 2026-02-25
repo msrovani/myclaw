@@ -53,6 +53,7 @@ All configuration via environment variables:
 cmd/xxxclaw/          Entry point
 internal/
   config/             Config loader
+  container/          Dependency injection container (LIFO shutdown)
   core/               Event bus, workers, scheduler
   db/                 SQLite, migrations, vec
   memory/             Mem0-like engine

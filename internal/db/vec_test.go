@@ -116,3 +116,31 @@ func TestSearchVectorFallback(t *testing.T) {
 		t.Errorf("cross tenant vector leakage detected or incorrect result")
 	}
 }
+
+func TestSearchFTS_SanitizesQuery(t *testing.T) {
+	m := NewManager(Config{BaseDataDir: t.TempDir(), MaxReaders: 1})
+	defer m.CloseAll()
+
+	ctx := core.WithTenant(context.Background(), core.TenantContext{UID: "userA", WorkspaceID: "ws1"})
+	dbA, err := m.GetDB(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = dbA.Write(ctx, func(tx *sql.Tx) error {
+		q := "INSERT INTO memories (id, uid, workspace_id, content, metadata) VALUES (?, ?, ?, ?, ?)"
+		_, err := tx.Exec(q, "m1", "userA", "ws1", "O usuário gosta de café preto e tecnologia Go.", "{}")
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := dbA.SearchFTS(ctx, "café preto?", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) == 0 {
+		t.Fatalf("expected at least one FTS result")
+	}
+}

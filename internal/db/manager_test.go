@@ -37,7 +37,7 @@ func TestManager_CrossTenantIsolation(t *testing.T) {
 
 	// Insert data into User A's BD
 	err = dbA.Write(ctxA, func(tx *sql.Tx) error {
-		_, err := tx.Exec("INSERT INTO entities (id, uid, workspace_id, name) VALUES ('e1', 'user_a', 'ws_1', 'secret')")
+		_, err := tx.Exec("INSERT INTO memories (id, uid, workspace_id, content) VALUES ('m1', 'user_a', 'ws_1', 'secret')")
 		return err
 	})
 	if err != nil {
@@ -51,10 +51,10 @@ func TestManager_CrossTenantIsolation(t *testing.T) {
 	}
 
 	// Attempt to read User A's secret from User B's DB
-	var name string
-	err = dbB.ReadRow(ctxB, "SELECT name FROM entities WHERE id = 'e1'").Scan(&name)
+	var content string
+	err = dbB.ReadRow(ctxB, "SELECT content FROM memories WHERE id = 'm1'").Scan(&content)
 	if err != sql.ErrNoRows {
-		t.Fatalf("cross-tenant leakage! expected ErrNoRows, got err=%v name=%v", err, name)
+		t.Fatalf("cross-tenant leakage! expected ErrNoRows, got err=%v content=%v", err, content)
 	}
 
 	// Verify paths are completely different
@@ -88,11 +88,7 @@ func TestManager_PathTraversal(t *testing.T) {
 		WorkspaceID: "passwd",
 	})
 
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("expected panic on path traversal attempt")
-		}
-	}()
-
-	m.GetDB(ctxHack)
+	if _, err := m.GetDB(ctxHack); err == nil {
+		t.Error("expected error on path traversal attempt")
+	}
 }

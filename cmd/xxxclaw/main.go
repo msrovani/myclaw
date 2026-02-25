@@ -5,13 +5,14 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"net/http/pprof"
+	_ "net/http/pprof"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"github.com/msrovani/myclaw/internal/config"
+	"github.com/msrovani/myclaw/internal/container"
 	"github.com/msrovani/myclaw/internal/dashboard"
 	"github.com/msrovani/myclaw/internal/db"
 	"github.com/msrovani/myclaw/internal/memory"
@@ -33,81 +34,78 @@ func main() {
 
 	slog.Info("starting xxxclaw",
 		"version", Version,
-		"log_level", cfg.LogLevel,
+		"env", cfg.Env,
 		"http_addr", cfg.HTTPAddr,
 	)
 
+	// --- Initialization via Type-Safe Container ---
+	ct := container.New()
+
+	// 1. Database Manager
+	dbMgr := db.NewManager(db.Config{
+		BaseDataDir: "./data",
+		BusyTimeout: cfg.DBBusyTimeout,
+		MaxReaders:  4,
+		Env:         cfg.Env,
+	})
+	ct.Register("db", dbMgr)
+
+	// 2. LLM Providers & Router
+	ollama := providers.NewOllamaProvider(cfg.OllamaURL)
+	ct.Register("provider.ollama", ollama)
+
+	economy := router.NewEconomy(dbMgr)
+	ct.Register("economy", economy)
+
+	llmRouter := router.NewRouter([]providers.Provider{ollama}, economy)
+	ct.Register("router", llmRouter)
+
+	// 3. Memory Engine (Injected with Ollama for embeddings)
+	memEngine := memory.NewEngine(dbMgr, ollama)
+	ct.Register("memory", memEngine)
+
+	// 4. Skills Registry
+	skillRegistry := skills.NewRegistry()
+	if err := skills.LoadAgentDir(".agent", skillRegistry); err != nil {
+		slog.Warn("skills: error mounting .agent directory", "error", err)
+	}
+	ct.Register("skills", skillRegistry)
+
+	// --- HTTP Server Setup ---
 	mux := http.NewServeMux()
 
-	// Health endpoint
+	// Health/Ready endpoints
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, `{"status":"ok","version":"%s","time":"%s"}`, Version, time.Now().UTC().Format(time.RFC3339))
+		fmt.Fprintf(w, `{"status":"ok","version":"%s"}`, Version)
 	})
+	dashboard.NewServer(mux, memEngine, economy, llmRouter, skillRegistry)
 
-	// Readiness endpoint
-	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, `{"status":"ready"}`)
-	})
-
-	// pprof endpoints (protected: only in dev/admin mode)
+	// pprof (only if enabled)
 	if cfg.PprofEnabled {
-		pprofMux := http.NewServeMux()
-		pprofMux.HandleFunc("/debug/pprof/", pprof.Index)
-		pprofMux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
-		pprofMux.HandleFunc("/debug/pprof/profile", pprof.Profile)
-		pprofMux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
-		pprofMux.HandleFunc("/debug/pprof/trace", pprof.Trace)
-
-		go func() {
-			pprofAddr := cfg.PprofAddr
-			slog.Info("pprof server starting", "addr", pprofAddr)
-			if err := http.ListenAndServe(pprofAddr, pprofMux); err != nil {
-				slog.Error("pprof server failed", "error", err)
+		http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/" {
+				http.NotFound(w, r)
+				return
 			}
+			http.Redirect(w, r, "/debug/pprof/", http.StatusFound)
+		})
+		go func() {
+			slog.Info("pprof server starting", "addr", cfg.PprofAddr)
+			_ = http.ListenAndServe(cfg.PprofAddr, nil) // uses DefaultServeMux
 		}()
 	}
 
-	// --- XXXCLAW Core Subsystems ---
-	slog.Info("initializing core subsystems...")
-
-	dbMgr := db.NewManager(db.Config{
-		BaseDataDir: "./data",
-		BusyTimeout: 5000,
-		MaxReaders:  4,
-	})
-
-	memEngine := memory.NewEngine(dbMgr)
-	_ = memEngine // Available for future controllers
-
-	economy := router.NewEconomy(dbMgr)
-	llmRouter := router.NewRouter([]providers.Provider{}, economy)
-	_ = llmRouter // Available for future controllers
-
-	skillRegistry := skills.NewRegistry()
-
-	// --- Dashboard UI ---
-	slog.Info("initializing admin dashboard routes...")
-	dashboard.NewServer(mux, memEngine, economy, llmRouter, skillRegistry)
-	// -------------------------------
-
+	// --- Shutdown Logic ---
 	srv := &http.Server{
-		Addr:         cfg.HTTPAddr,
-		Handler:      mux,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 30 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Addr:    cfg.HTTPAddr,
+		Handler: mux,
 	}
 
-	// Graceful shutdown
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	go func() {
-		slog.Info("http server starting", "addr", cfg.HTTPAddr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("http server failed", "error", err)
 			os.Exit(1)
@@ -115,18 +113,19 @@ func main() {
 	}()
 
 	<-ctx.Done()
-	slog.Info("shutdown signal received, draining...")
+	slog.Info("shutdown signal received")
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		slog.Error("http server shutdown error", "error", err)
+		slog.Error("server shutdown error", "error", err)
 	}
 
-	// Shutdown core subsystems safely
-	slog.Info("closing database connections...")
-	dbMgr.CloseAll()
+	// Critical: Shutdown all services in LIFO order via container
+	if err := ct.Shutdown(shutdownCtx); err != nil {
+		slog.Error("container shutdown error", "error", err)
+	}
 
 	slog.Info("xxxclaw stopped")
 }

@@ -42,17 +42,21 @@ type Config struct {
 
 // Load reads configuration from environment variables with sensible defaults.
 func Load() (*Config, error) {
+	// PprofEnabled defaults to false in prod, true in dev/edge for safety.
+	env := envOrDefault("XXXCLAW_ENV", "dev")
+	defaultPprof := env != "prod"
+
 	cfg := &Config{
 		HTTPAddr:                envOrDefault("XXXCLAW_HTTP_ADDR", ":8080"),
 		LogLevel:                envOrDefault("XXXCLAW_LOG_LEVEL", "info"),
 		LogFormat:               envOrDefault("XXXCLAW_LOG_FORMAT", "json"),
-		PprofEnabled:            envBoolOrDefault("XXXCLAW_PPROF_ENABLED", true),
+		PprofEnabled:            envBoolOrDefault("XXXCLAW_PPROF_ENABLED", defaultPprof),
 		PprofAddr:               envOrDefault("XXXCLAW_PPROF_ADDR", ":6060"),
 		DBPath:                  envOrDefault("XXXCLAW_DB_PATH", "data/xxxclaw.db"),
 		DBBusyTimeout:           envIntOrDefault("XXXCLAW_DB_BUSY_TIMEOUT", 5000),
 		VectorEnabled:           envBoolOrDefault("XXXCLAW_VECTOR_ENABLED", true),
 		VectorDim:               envIntOrDefault("XXXCLAW_VECTOR_DIM", 384),
-		Env:                     envOrDefault("XXXCLAW_ENV", "dev"),
+		Env:                     env,
 		OllamaURL:               envOrDefault("XXXCLAW_OLLAMA_URL", "http://localhost:11434"),
 		GeminiAPIKey:            os.Getenv("XXXCLAW_GEMINI_API_KEY"),
 		ClaudeAPIKey:            os.Getenv("XXXCLAW_CLAUDE_API_KEY"),

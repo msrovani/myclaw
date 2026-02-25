@@ -45,8 +45,13 @@ func TestRouter_And_Economy(t *testing.T) {
 	ctxB := core.WithTenant(context.Background(), core.TenantContext{UID: "u2", WorkspaceID: "w1"})
 
 	// Test 1: Route to local due to LowLatencyOnly
-	req := providers.GenerateRequest{Model: "qwen2.5"}
-	resp, err := r.Route(ctxA, req, Policy{LowLatencyOnly: true})
+	reqA := providers.GenerateRequest{
+		Model: "qwen2.5",
+		Messages: []providers.Message{
+			{Role: "user", Content: "Hello User A"},
+		},
+	}
+	resp, err := r.Route(ctxA, reqA, Policy{LowLatencyOnly: true})
 
 	if err != nil {
 		t.Fatalf("route failed: %v", err)
@@ -68,7 +73,13 @@ func TestRouter_And_Economy(t *testing.T) {
 	}
 
 	// Test 3: Complex routing
-	resp, _ = r.Route(ctxB, req, Policy{ComplexReasoning: true})
+	reqB := providers.GenerateRequest{
+		Model: "qwen2.5",
+		Messages: []providers.Message{
+			{Role: "user", Content: "Hello User B"},
+		},
+	}
+	resp, _ = r.Route(ctxB, reqB, Policy{ComplexReasoning: true})
 	if resp.Content != "Mock string for claude" {
 		t.Errorf("expected claude resolution, got %s", resp.Content)
 	}

@@ -37,24 +37,24 @@ func NewManager(cfg Config) *Manager {
 	}
 }
 
+var validIDRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+
 // getDBPath constructs the strictly isolated physical path for a workspace.
 // Form: {BaseDataDir}/tenants/{uid}/workspaces/{workspace_id}/memory.db
-func (m *Manager) getDBPath(tc core.TenantContext) string {
+func (m *Manager) getDBPath(tc core.TenantContext) (string, error) {
 	// Security: validate path components strictly to prevent traversal
-	validID := regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
-
-	if !validID.MatchString(tc.UID) || !validID.MatchString(tc.WorkspaceID) {
-		panic("db manager: invalid tenant context identifier format (path traversal detected)")
+	if !validIDRegex.MatchString(tc.UID) || !validIDRegex.MatchString(tc.WorkspaceID) {
+		return "", fmt.Errorf("db manager: invalid tenant context identifier format")
 	}
 
 	uid := filepath.Clean(tc.UID)
 	wid := filepath.Clean(tc.WorkspaceID)
 
-	if uid == "." || wid == "." || filepath.IsAbs(uid) || filepath.IsAbs(wid) {
-		panic("db: invalid tenant context path traversal detected")
+	if uid == "." || wid == "." || filepath.IsAbs(uid) || filepath.IsAbs(wid) || uid == ".." || wid == ".." {
+		return "", fmt.Errorf("db manager: invalid tenant context path traversal detected")
 	}
 
-	return filepath.Join(m.cfg.BaseDataDir, "tenants", uid, "workspaces", wid, "memory.db")
+	return filepath.Join(m.cfg.BaseDataDir, "tenants", uid, "workspaces", wid, "memory.db"), nil
 }
 
 // GetDB retrieves or opens the isolated database for the given tenant context.
@@ -82,7 +82,11 @@ func (m *Manager) GetDB(ctx context.Context) (*DB, error) {
 	}
 
 	// Calculate isolated path and ensure directories exist
-	dbPath := m.getDBPath(tc)
+	dbPath, err := m.getDBPath(tc)
+	if err != nil {
+		return nil, err
+	}
+
 	dbDir := filepath.Dir(dbPath)
 	if err := os.MkdirAll(dbDir, 0700); err != nil {
 		return nil, fmt.Errorf("db manager: failed to create tenant dir: %w", err)
