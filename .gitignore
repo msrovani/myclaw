@@ -23,6 +23,9 @@ data/
 *.swp
 *.swo
 
+# Agent workspace
+.agent/
+
 # OS
 .DS_Store
 Thumbs.db
